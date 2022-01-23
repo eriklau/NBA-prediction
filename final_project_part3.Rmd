@@ -1,0 +1,492 @@
+---
+title: "Predicting NBA Win Percentages With Linear Regression"
+author: "Eric Liu"
+date: "December 17, 2021"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r, include=FALSE}
+# Loading libraries and Data cleaning
+
+library(tidyverse)
+library(janitor)
+library(skimr)
+library(visdat)
+library(dplyr)
+library(ggplot2)
+library(qwraps2)
+
+library(car)
+library(olsrr)
+library(leaps)
+
+advancedstats_2018_2019 <- read.csv("C:/Users/Larkin/Desktop/nbadata/AdvancedStats2018-2019.csv")
+advancedstats_2017_2018 <- read.csv("C:/Users/Larkin/Desktop/nbadata/AdvancedStats2017-2018.csv")
+advancedstats_2016_2017 <- read.csv("C:/Users/Larkin/Desktop/nbadata/AdvancedStats2016-2017.csv")
+advancedstats_2015_2016 <- read.csv("C:/Users/Larkin/Desktop/nbadata/AdvancedStats2015-2016.csv")
+advancedstats_2014_2015 <- read.csv("C:/Users/Larkin/Desktop/nbadata/AdvancedStats2014-2015.csv")
+advancedstats_2013_2014 <- read.csv("C:/Users/Larkin/Desktop/nbadata/AdvancedStats2013-2014.csv")
+
+data <- rbind(advancedstats_2013_2014,advancedstats_2014_2015,advancedstats_2015_2016,advancedstats_2016_2017,advancedstats_2017_2018,
+              advancedstats_2018_2019)
+data <- data[-c(1,32,33,64,65,96,97,128,129,160,161,192), ]
+
+data <- data %>% 
+  select(X.2,X.3,X.4,X.7,X.8,X.9,X.10,X.11,X.12,X.13,X.14,X.15,X.16,
+         Offense.Four.Factors,Offense.Four.Factors.1,Offense.Four.Factors.2,Offense.Four.Factors.3,
+         Defense.Four.Factors,Defense.Four.Factors.1,Defense.Four.Factors.2,Defense.Four.Factors.3,
+         X.21,X.22)
+
+data <- data %>% 
+  rename(Age = X.2,
+         Wins = X.3,
+         Losses = X.4,
+         MOV =  X.7,
+         SOS = X.8,
+         SRS = X.9,
+         ORtg = X.10,
+         DRtg = X.11,
+         NRtg = X.12,
+         Pace = X.13,
+         FTr = X.14,
+         ThreePAr = X.15,
+         TSper = X.16,
+         OFF_eFG = Offense.Four.Factors,
+         OFF_TOV = Offense.Four.Factors.1,
+         OFF_ORB = Offense.Four.Factors.2,
+         OFF_FT_FGA = Offense.Four.Factors.3,
+         DEF_eFG = Defense.Four.Factors,
+         DEF_TOV = Defense.Four.Factors.1,
+         DEF_ORB = Defense.Four.Factors.2,
+         DEF_FT_FGA = Defense.Four.Factors.3,
+         Attendance = X.21,
+         Attend_per_game = X.22
+         )
+
+data <- data %>% 
+  mutate(
+    Win_per = round(as.numeric(Wins)/82,3)
+  )
+
+data <- mutate_all(data, function(x) as.numeric(as.character(x)))
+
+data <- subset(data, select=-c(Wins,Losses,Attendance))
+
+View(data)
+
+```
+
+```{r, include=FALSE}
+# Model training and validation
+
+# create 50/50 split on 180 so 90-90
+set.seed(1)
+train <- data[sample(1:nrow(data), 90, replace=F), ]
+test <- data[which(!(row.names(data) %in% row.names(train))),]
+
+# Look at the summaries of the variables to check if they are similar
+mtr <- apply(train, 2, mean)
+sdtr <- apply(train, 2, sd)
+
+mtest <- apply(test, 2, mean)
+sdtest <- apply(test, 2, sd)
+```
+
+```{r, include=FALSE}
+full <- lm(Win_per ~ ., data=train)
+
+# Check conditions for checking model assumptions
+pairs(train)
+plot(train$Win_per ~ fitted(full), main="Y vs Fitted", xlab="Fitted", ylab="Win Percentage")
+lines(lowess(train$Win_per ~ fitted(full)), lty=2)
+abline(a = 0, b = 1)
+```
+
+```{r, include=FALSE}
+# Check model assumptions
+par(mfrow=c(3,4))
+plot(rstandard(full)~fitted(full), xlab="fitted", ylab="Residuals")
+for(i in c(1:20)){
+  plot(rstandard(full)~train[,i], xlab=names(train)[i], ylab="Residuals")
+}
+qqnorm(rstandard(full))
+qqline(rstandard(full))
+
+# Transformations: only 1 variable needs transforming which is OFF_TOV
+# eps = 10.68
+# 
+# mod_train <- train + eps
+# 
+# p <- powerTransform(cbind(mod_train))
+# summary(p)
+
+# so transform just OFF_TOV in both the train and test
+train$logOFF_TOV <- log(train$OFF_TOV)
+# train$logDrive <- log(train$DrivingAccuracy)
+
+test$logOFF_TOV <- log(test$OFF_TOV)
+# test$logDrive <- log(test$DrivingAccuracy)
+
+full2 <- lm(Win_per ~ Age + MOV + SOS + SRS + ORtg + NRtg + Pace + FTr + ThreePAr + TSper + OFF_eFG + logOFF_TOV + OFF_ORB + OFF_FT_FGA + DEF_eFG + DEF_TOV + DEF_ORB + DEF_FT_FGA + Attend_per_game, data=train[,-c(13)])
+summary(full2)
+
+
+# Multicollinearity VIF test: We originally get an error saying "there are aliased coefficients in the model" meaning there is PERFECT multicollinearity. We now identity which variables are the culprits. Turns out it was the variables ORtg and DRtg. We need to remove one of them.
+
+alias(full2)
+
+vif(full2)
+
+```
+
+```{r, include=FALSE}
+# Choose model using best subset method
+best <- regsubsets(Win_per ~ Age + MOV + SOS + SRS + ORtg + DRtg + NRtg + Pace + FTr + ThreePAr + TSper + OFF_eFG + logOFF_TOV + OFF_ORB + OFF_FT_FGA + DEF_eFG + DEF_TOV + DEF_ORB + DEF_FT_FGA + Attend_per_game, data=train, nbest=1)
+summary(best)
+
+# This graph tells us we should have around 4 or more predictors in the final since it plateaus around there
+# subsets(best, statistic = "adjr2")
+
+# Build the best subset models for 1,2,...,7 predictors
+mod1 <- lm(Win_per ~ MOV, data=train)
+mod2 <- lm(Win_per ~ Age + NRtg, data=train)
+mod3 <- lm(Win_per ~ Age + NRtg + Attend_per_game, data=train)
+mod4 <- lm(Win_per ~ Age + NRtg + Attend_per_game + OFF_FT_FGA, data=train)
+mod5 <- lm(Win_per ~ Age + NRtg + Attend_per_game + OFF_FT_FGA +
+             SRS, data=train)
+mod6 <- lm(Win_per ~ Age + NRtg + Attend_per_game + ThreePAr +
+             TSper + OFF_eFG, data=train)
+mod7 <- lm(Win_per ~ Age + NRtg + Attend_per_game + ThreePAr +
+             TSper + OFF_eFG + SRS, data=train)
+
+# Check VIFs of these models. It shows that mod5-7 have predictors with VIFs much greater than 5 so we should only consider mod2-4
+vif(mod2)
+vif(mod3)
+vif(mod4)
+vif(mod5)
+vif(mod6)
+vif(mod7)
+
+# Check adjusted R^2 for mod2-4
+summary(mod1)$adj.r.squared
+summary(mod2)$adj.r.squared
+summary(mod3)$adj.r.squared
+summary(mod4)$adj.r.squared
+summary(mod5)$adj.r.squared
+summary(mod6)$adj.r.squared
+summary(mod7)$adj.r.squared
+```
+
+```{r, include=FALSE}
+# Other model selection using stepwise forward, backward, or both
+
+library(MASS)
+
+new <- train[,-c(13)]
+
+# The forward model and vif. Get a decent model with 3 predictors
+?stepAIC
+stepAIC(lm(Win_per ~ 1, data=new),
+        scope=list(upper=lm(Win_per ~ ., data=new)),
+        direction = "forward", k=2)
+
+fmod <- lm(Win_per ~ MOV + Age + Attend_per_game, data = new)
+summary(fmod)
+vif(fmod)
+
+# The backwards model and vif. Some predictors have large VIFs
+stepAIC(lm(Win_per ~ ., data=new),
+        scope=list(lower=lm(Win_per ~ 1, data=new)),
+        direction = "backward", k=2)
+
+bmod <- lm(Win_per ~ Age + MOV + ThreePAr + TSper + OFF_eFG + 
+    Attend_per_game, data = new)
+summary(bmod)
+vif(bmod)
+
+# Backwards selection using BIC. Yields solid results with 2 predictors
+stepAIC(lm(Win_per ~ ., data=new),
+        scope=list(lower=lm(Win_per ~ 1, data=new)),
+        direction = "backward", k=log(nrow(new)))
+
+bicmod <- lm(Win_per ~ Age + MOV, data = new)
+summary(bicmod)
+vif(bicmod)
+```
+
+```{r, include=FALSE}
+# Finalizing the models, influential points
+
+# for model 2
+vif(mod2)
+which(cooks.distance(mod2)>qf(0.5, 3, 90-3))
+which(abs(dffits(mod2)) > 2*sqrt(3/90))
+
+par(mfrow=c(2,2))
+plot(rstandard(mod2)~train$Age)
+plot(rstandard(mod2)~train$NRtg)
+
+qqnorm(rstandard(mod2))
+qqline(rstandard(mod2))
+
+# for model 3
+vif(mod3)
+which(cooks.distance(mod3)>qf(0.5, 4, 90-4))
+which(abs(dffits(mod3)) > 2*sqrt(4/90))
+
+par(mfrow=c(2,2))
+plot(rstandard(mod3)~train$Age)
+plot(rstandard(mod3)~train$NRtg)
+plot(rstandard(mod3)~train$Attend_per_game)
+
+qqnorm(rstandard(mod3))
+qqline(rstandard(mod3))
+
+# for model 4
+vif(mod4)
+which(cooks.distance(mod4)>qf(0.5, 5, 90-5))
+which(abs(dffits(mod4)) > 2*sqrt(5/90))
+
+par(mfrow=c(2,3))
+plot(rstandard(mod4)~train$Age)
+plot(rstandard(mod4)~train$NRtg)
+plot(rstandard(mod4)~train$Attend_per_game)
+plot(rstandard(mod4)~train$OFF_FT_FGA)
+
+qqnorm(rstandard(mod4))
+qqline(rstandard(mod4))
+
+
+# for forward model
+vif(fmod)
+which(cooks.distance(fmod)>qf(0.5, 4, 90-4))
+which(abs(dffits(fmod)) > 2*sqrt(4/90))
+
+par(mfrow=c(2,2))
+plot(rstandard(fmod)~train$Age)
+plot(rstandard(fmod)~train$MOV)
+plot(rstandard(fmod)~train$Attend_per_game)
+
+qqnorm(rstandard(fmod))
+qqline(rstandard(fmod))
+
+# for backward BIC model
+vif(bicmod)
+which(cooks.distance(bicmod)>qf(0.5, 3, 90-3))
+which(abs(dffits(bicmod)) > 2*sqrt(3/90))
+
+par(mfrow=c(2,2))
+plot(rstandard(bicmod)~train$Age)
+plot(rstandard(bicmod)~train$MOV)
+
+qqnorm(rstandard(bicmod))
+qqline(rstandard(bicmod))
+
+```
+
+```{r, include=FALSE}
+# Model validation using test dataset
+mod2test <- lm(Win_per ~ Age + NRtg, data=test)
+mod3test <- lm(Win_per ~ Age + NRtg + Attend_per_game, data=test)
+mod4test <- lm(Win_per ~ Age + NRtg + Attend_per_game + OFF_FT_FGA, data=test)
+fmodtest <- lm(Win_per ~ MOV + Age + Attend_per_game, data = test)
+bicmodtest <- lm(Win_per ~ Age + MOV, data = test)
+
+### MODEL COMPARISON
+
+# mod2
+summary(mod2)
+summary(mod2test)
+vif(mod2)
+vif(mod2test)
+which(cooks.distance(mod2test)>qf(0.5, 3, 98-3))
+which(abs(dffits(mod2test)) > 2*sqrt(3/98))
+par(mfrow=c(2,2))
+plot(rstandard(mod2test)~test$Age)
+plot(rstandard(mod2test)~test$NRtg)
+qqnorm(rstandard(mod2test))
+qqline(rstandard(mod2test))
+
+# mod3
+summary(mod3)
+summary(mod3test)
+vif(mod3)
+vif(mod3test)
+which(cooks.distance(mod3test)>qf(0.5, 4, 98-4))
+which(abs(dffits(mod3test)) > 2*sqrt(4/98))
+par(mfrow=c(2,2))
+plot(rstandard(mod3test)~test$Age)
+plot(rstandard(mod3test)~test$NRtg)
+plot(rstandard(mod3test)~test$Attend_per_game)
+qqnorm(rstandard(mod3test))
+qqline(rstandard(mod3test))
+
+# mod4
+summary(mod4)
+summary(mod4test)
+vif(mod4)
+vif(mod4test)
+which(cooks.distance(mod4test)>qf(0.5, 5, 98-5))
+which(abs(dffits(mod4test)) > 2*sqrt(5/98))
+par(mfrow=c(2,2))
+plot(rstandard(mod4test)~test$Age)
+plot(rstandard(mod4test)~test$NRtg)
+plot(rstandard(mod4test)~test$Attend_per_game)
+plot(rstandard(mod4test)~test$OFF_FT_FGA)
+qqnorm(rstandard(mod4test))
+qqline(rstandard(mod4test))
+
+# fmod
+summary(fmod)
+summary(fmodtest)
+vif(fmod)
+vif(fmodtest)
+which(cooks.distance(fmodtest)>qf(0.5, 4, 98-4))
+which(abs(dffits(fmodtest)) > 2*sqrt(4/98))
+par(mfrow=c(2,2))
+plot(rstandard(fmodtest)~test$Age)
+plot(rstandard(fmodtest)~test$MOV)
+plot(rstandard(fmodtest)~test$Attend_per_game)
+qqnorm(rstandard(fmodtest))
+qqline(rstandard(fmodtest))
+
+# bicmod
+summary(bicmod)
+summary(bicmodtest)
+vif(bicmod)
+vif(bicmodtest)
+which(cooks.distance(bicmodtest)>qf(0.5, 3, 98-3))
+which(abs(dffits(bicmodtest)) > 2*sqrt(3/98))
+par(mfrow=c(2,2))
+plot(rstandard(bicmodtest)~test$Age)
+plot(rstandard(bicmodtest)~test$MOV)
+qqnorm(rstandard(bicmodtest))
+qqline(rstandard(bicmodtest))
+```
+
+# Introduction
+The question of research in this report is to determine what factors attribute to the winning games in the NBA. The goal of this research is to explore new possible combinations of factors that could contribute to determining how games are won. The significant outcome of this report, if there is one, will hope to provide the most definitive answer on which factor or factors attributes most towards winning. A blog (Kotzias, 2018) referenced an interesting insight dubbed called the "Four Factors of Basketball Success". These four factors simply weights the effectiveness of each contributor which are, Shooting (40%), Turnover Rate (25%), Offensive Rebound Rate (20%), and Free Throw Rate (15%). The plan for this report will be to keep these kind variables in mind and perhaps find new factors that contribute to winning.
+
+# Methods
+
+### Variable Selection
+When choosing variables for a model we generally want to choose variables that are linearly significant to the response. In other words, we want variables that will yield the most significant p-values. Moreover, it also has to have significant AIC, BIC, and adjusted R-squared values as well. There are numerous ways to choose variables and one could even arbitrarily pick variables that turn out to be significant in all areas, but we will be using a couple of selection methods that will conveniently give us some optimal models including forward and backward step-wise selection, BIC backwards selection, and all best subset selection. All these selection methods will choose variables based on optimal AIC and BIC to yield optimal p-values and adjusted R-squared values.
+
+### Model Validation
+To validate the model we will divide the original data into a training set and a testing set. We will divide it 50/50 of 180 observations, so we will have 90 observations in our training data and 90 in our testing data. We then perform the model selection process as described above on our training data set to find the most optimal models. Once we have obtained these models in the training set, we use these models on the testing set and see how it compares to the training set. We will be comparing many characteristics that both models will yield. Some which include if the p-values of predictors become significant or insignificant, if there exists more or less multicollinearity, and if the adjusted R-squared changes significantly. Although the listed are some of the more important areas to note, we generally want consistency in both data sets and nothing that will deviate too much from the other in which we can then conclude and validate the model.
+
+### Model Violations & Diagnostics
+After choosing the some of the best models through the model selection process, we need to perform some diagnostics on these models to see if they have any violations. Perhaps the first thing we would check is the multicollinearity of the predictors, which can be determined by checking the VIFs of the predictors in the model. If any variables have a VIF value greater than 5, then we need to consider other optimal models and if all of them have high VIFs, then this would be a limitation due to the nature of our data. Afterwards we check for influential points that may skew the data. We can do this by using Cook's distance and DFFITS and hope that the models don't exhibit too many influential points. Finally, a model diagnostic to perform would be checking the assumptions of linearity, constant variance, uncorrelated errors, which can be checked through a combination of residual plots, pairwise predictor plots, response and fitted value plot, and QQ-plots. If there are violated assumptions, we would need to perform a Box-cox or a power transformation on some predictors to satisfy assumptions.
+
+# Results
+
+### Data Description
+The entire data set contains 180 observations taken the seasons during 2013-2019 and it is divided evenly into a training and testing set with 90 observations in both. In each set I have arbitrarily divided the points to avoid any biases that might come up when comparing models between the two sets. There are a total of 20 predictor variables and 1 response variable being the win percentage (Win_per). Table 1 below gives some basic numerical summaries on the mean and standard deviation on all 21 variables in both the training and testing sets. We can see that the means in both sets are relatively close with nothing too differing. One thing to mention is that some of the means are slightly below zero, but these variables are mostly net rating systems which allows negative ratings and this makes sense intuitively since the net usually has an average of zero. However, the standard deviation differs in a couple of variables particularly in MOV, SRS, DRtg, and NRtg. The reason for this is largely be due by chance and the effects of these differences may effect how we validate our models.
+
+Variable | mean (s.d.) in training | mean (s.d.) in test
+---------|-------------------------|--------------------
+`r names(test)[1]` | `r round(mtr[1], 3)` (`r round(sdtr[1], 3)`) | `r round(mtest[1], 3)` (`r round(sdtest[1], 3)`)
+`r names(test)[2]` | `r round(mtr[2],3)` (`r round(sdtr[2],3)`) | `r round(mtest[2],3)` (`r round(sdtest[2],3)`)
+`r names(test)[3]` | `r round(mtr[3],3)` (`r round(sdtr[3],3)`) | `r round(mtest[3],3)` (`r round(sdtest[3],3)`)
+`r names(test)[4]` | `r round(mtr[4],3)` (`r round(sdtr[4],3)`) | `r round(mtest[4],3)` (`r round(sdtest[4],3)`)
+`r names(test)[5]` | `r round(mtr[5],3)` (`r round(sdtr[5],3)`) | `r round(mtest[5],3)` (`r round(sdtest[5],3)`)
+`r names(test)[6]` | `r round(mtr[6],3)` (`r round(sdtr[6],3)`) | `r round(mtest[6],3)` (`r round(sdtest[6],3)`)
+`r names(test)[7]` | `r round(mtr[7],3)` (`r round(sdtr[7],3)`) | `r round(mtest[7],3)` (`r round(sdtest[7],3)`)
+`r names(test)[8]` | `r round(mtr[8],3)` (`r round(sdtr[8],3)`) | `r round(mtest[8],3)` (`r round(sdtest[8],3)`)
+`r names(test)[9]` | `r round(mtr[9],3)` (`r round(sdtr[9],3)`) | `r round(mtest[9],3)` (`r round(sdtest[9],3)`)
+`r names(test)[10]` | `r round(mtr[10],3)` (`r round(sdtr[10],3)`) | `r round(mtest[10],3)` (`r round(sdtest[10],3)`)
+`r names(test)[11]` | `r round(mtr[11], 3)` (`r round(sdtr[11], 3)`) | `r round(mtest[11], 3)` (`r round(sdtest[11], 3)`)
+`r names(test)[12]` | `r round(mtr[12],3)` (`r round(sdtr[12],3)`) | `r round(mtest[12],3)` (`r round(sdtest[12],3)`)
+`r names(test)[13]` | `r round(mtr[13],3)` (`r round(sdtr[13],3)`) | `r round(mtest[13],3)` (`r round(sdtest[13],3)`)
+`r names(test)[14]` | `r round(mtr[14],3)` (`r round(sdtr[14],3)`) | `r round(mtest[14],3)` (`r round(sdtest[14],3)`)
+`r names(test)[15]` | `r round(mtr[15],3)` (`r round(sdtr[15],3)`) | `r round(mtest[15],3)` (`r round(sdtest[15],3)`)
+`r names(test)[16]` | `r round(mtr[16],3)` (`r round(sdtr[16],3)`) | `r round(mtest[16],3)` (`r round(sdtest[16],3)`)
+`r names(test)[17]` | `r round(mtr[17],3)` (`r round(sdtr[17],3)`) | `r round(mtest[17],3)` (`r round(sdtest[17],3)`)
+`r names(test)[18]` | `r round(mtr[18],3)` (`r round(sdtr[18],3)`) | `r round(mtest[18],3)` (`r round(sdtest[18],3)`)
+`r names(test)[19]` | `r round(mtr[19],3)` (`r round(sdtr[19],3)`) | `r round(mtest[19],3)` (`r round(sdtest[19],3)`)
+`r names(test)[20]` | `r round(mtr[20],3)` (`r round(sdtr[20],3)`) | `r round(mtest[20],3)` (`r round(sdtest[20],3)`)
+`r names(test)[21]` | `r round(mtr[21],3)` (`r round(sdtr[21],3)`) | `r round(mtest[21],3)` (`r round(sdtest[21],3)`)
+
+Table: Summary statistics in training and test data set, each with 90 observations.
+
+### Model Selection Process & Final Model
+Before performing the model selection process, it is important to check assumptions on the response vs fitted values shown in Figure 1 and it clearly shows that it satisfies all assumptions. Therefore any transformation on the response is not needed. 
+
+```{r, echo=FALSE}
+ggplot(train, aes(x=fitted(full), y=Win_per)) + geom_point() + labs(subtitle="Win Percentage vs Fitted Values",caption="Figure 1")
+```
+
+It is also important to check some of the model assumptions. Figure 2 below plots the predictors by the residuals and most of these plots do not violate any assumptions. I later discovered that the Offensive Turnover (OFF_TOV) variable had some minor violations, but it was fixed by a simple log transformation given the Box-cox transformation information. Not all predictors were plotted and the rest can be found in Figure 6 of the appendix.
+
+```{r, echo=FALSE}
+par(mfrow=c(3,4))
+plot(rstandard(full)~fitted(full), xlab="fitted", ylab="Residuals")
+for(i in c(1:11)){
+  plot(rstandard(full)~train[,i], xlab=names(train)[i], ylab="Residuals")
+}
+```
+Figure 2
+
+Afterwards the model selection began. I first used the best subset method to obtain three models with the best subset of 2-4 predictors. The models with 5 or more had extremely high VIF values so I had to only consider the models with 2-4 predictors. I obtained one model using forward selection and another model using BIC based backward selection, which gave a total of five optimal models to choose from. I then checked for influential points that may alter the variability of the model. The Cook's distance determined that all five models did not have any observations that were influential, but the DFFITs determined there were about 5-8 observations that were influential own its own predicted values.
+
+The validation of these models were not satisfactory as all of them had some complications when comparing it with the testing set. In fact, all the models tried on the testing set showed that their VIFs increased, had differing intercepts, and at least one predictor became insignificant. In the end I was ultimately limited by the nature of the data and so I chose the model that had the smallest differences in these areas while also having the most satisfactory residual plots and QQ-plots. The model of the best subset of four predictors ended up being the final chosen model. 
+
+These four predictors in the final model were the average age (Age), the Net rating (NRtg), the average attendance (Attend_per_game), and free throw rate (OFF_FT_FGA). I then performed some additional model diagnostics shown in both figure 3 and 4 below and figure 5 in the appendix. In all cases we can see that all assumptions are satisfied.
+
+```{r, echo=FALSE, out.width="90%"}
+# Pairwise plot
+pairplot <- c(train[1],train[7],train[15],train[20])
+
+pairs(pairplot)
+
+```
+Figure 3
+
+```{r, echo=FALSE, out.width="90%"}
+qqnorm(rstandard(mod4test))
+qqline(rstandard(mod4test))
+```
+Figure 4
+
+# Discussion
+
+### Final Model & Interpretation
+The final model is Win Percentage ~ Average Age + Net Rating + Average Attendance + Average Free Throws per Field Goal Attempt.
+The Age variable makes sense contextually the older the team, the more experienced they are. The Net Rating is on average the difference in amount of points scored and points allowed, which essentially describes how a team performs on both ends of the floor. The amount of free throws per shot attempt is an underrated statistic as it essentially details the teams ability to basically get easy points. Finally the most surprising variable that made it in this model is the average attendance variable and perhaps a larger audience does in fact play a role in a teams performance as drives more motivation for the players to play better. The main takeaway from this model is that it contained only one variable in the previous studies mentioned in the beginning of this report (free throws),  which begs to question if this model lacks some other variables I have not considered or if it really is the best model.
+
+### Limitations
+There were several limitations that arose in this project. One being that my training set models couldn't have been truly validated in which the testing data had insignificant p-values and increased multicollinear variables. If we can't entirely validate our model, then we can't completely confirm the model yields the accurate predictions for all cases. On the other hand, there were some influential points calculated from the DFFITs and this can affect the overall slope of the regression. In both cases the VIF increased by a constant amount in all models and the same variables became insignificant, and so these limitations could not be corrected by any form of transformation and are in fact due to the nature of the original data.
+
+\newpage
+
+# Appendix
+
+```{r, echo=FALSE, out.width="90%"}
+# Y vs Fitted graph for final model
+finalplot <- c(train[1],train[7],train[15],train[20],train[21])
+
+ggplot(train, aes(x=fitted(mod4), y=Win_per)) + geom_point() + labs(subtitle="Win Percentage vs Fitted Values of the final model",caption="Figure 5")
+
+```
+
+```{r, echo=FALSE, out.width="90%"}
+# Rest of residuals from figure 2
+par(mfrow=c(3,4))
+plot(rstandard(full)~fitted(full), xlab="fitted", ylab="Residuals")
+for(i in c(12:20)){
+  plot(rstandard(full)~train[,i], xlab=names(train)[i], ylab="Residuals")
+}
+```
+Figure 6
+
+
+\newpage
+
+
+# References
+
+Kotzias, K., 2018. The Four Factors of Basketball as a Measure of Success - Statathlon. [online] Statathlon: Intelligence as a Service. Available at: <https://statathlon.com/four-factors-basketball-success/> [Accessed 22 October 2021].
+
+Basketball-Reference.com. NBA Season Summary | Basketball-Reference.com. [online] Available at: <https://www.basketball-reference.com/leagues/NBA_2019.html#all_shooting_team-opponent> [Accessed 22 October 2021].
